@@ -17,12 +17,13 @@ blur = cv2.GaussianBlur(gray, (5,5), 0)
 # Otsu threshold
 _, otsu = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU)
 
-# ✅ Invert so fragments = white, background = black
+# Invert so fragments = white, background = black
 otsu_inv = cv2.bitwise_not(otsu)
 
-# Morphology cleanup
-kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5,5))
-mask = cv2.morphologyEx(otsu_inv, cv2.MORPH_CLOSE, kernel, iterations=2)
+# Morphology cleanup (gentler for small fragments)
+kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3))
+mask = cv2.morphologyEx(otsu_inv, cv2.MORPH_OPEN, kernel, iterations=1)  # remove specks
+mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)      # close small holes
 
 cv2.imshow("Mask", mask)
 cv2.waitKey(0)
@@ -33,17 +34,18 @@ cv2.destroyAllWindows()
 # -----------------------
 contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-# Filter out tiny junk
-contours = [c for c in contours if cv2.contourArea(c) > 2000]
+# Lower the area filter to keep small fragments
+contours = [c for c in contours if cv2.contourArea(c) > 200]
 
-print(f"Extracted {len(contours)} parchment fragments")
+print(f"Extracted {len(contours)} parchment fragments (including small ones)")
 
-# Debug view: draw detected contours
+# Debug view
 debug_view = img.copy()
 cv2.drawContours(debug_view, contours, -1, (0,255,0), 2)
 cv2.imshow("Detected Fragments", debug_view)
 cv2.waitKey(0)
 cv2.destroyAllWindows()
+
 
 
 # -----------------------
@@ -118,46 +120,49 @@ if best_contour is not None:
                 (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,255), 2)
 
 # -----------------------
-# Step 5b: Show all fragments in a grid with edges
+# Step 5b: Show all fragments individually in a grid
 # -----------------------
 fragment_images = []
 for i, c in enumerate(contours):
     x, y, w, h = cv2.boundingRect(c)
     frag = img[y:y+h, x:x+w].copy()
 
-    mask_frag = np.zeros((h, w), dtype=np.uint8)
-    cv2.drawContours(mask_frag, [c - [x, y]], -1, 255, -1)
-    frag_masked = cv2.bitwise_and(frag, frag, mask=mask_frag)
+    # Optional: mask out background for cleaner display
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.drawContours(mask, [c - [x, y]], -1, 255, -1)
+    frag_masked = cv2.bitwise_and(frag, frag, mask=mask)
 
-    edges = cv2.Canny(mask_frag, 50, 150)
-    frag_edges = frag_masked.copy()
-    frag_edges[edges > 0] = (0, 0, 255)
-    fragment_images.append(frag_edges)
+    fragment_images.append(frag_masked)
 
+# Make a grid for visualization
 if fragment_images:
-    row_size = 4
-    max_h = max(f.shape[0] for f in fragment_images)
-    max_w = max(f.shape[1] for f in fragment_images)
-
-    # pad all fragments to same size
-    padded = []
-    for f in fragment_images:
-        h, w = f.shape[:2]
-        pad_top = 0
-        pad_bottom = max_h - h
-        pad_left = 0
-        pad_right = max_w - w
-        f_padded = cv2.copyMakeBorder(f, pad_top, pad_bottom, pad_left, pad_right,
-                                      cv2.BORDER_CONSTANT, value=(255,255,255))
-        padded.append(f_padded)
-
     rows = []
-    for i in range(0, len(padded), row_size):
-        row = padded[i:i+row_size]
-        rows.append(np.hstack(row))
-    grid = np.vstack(rows)
+    row_size = 4  # number of fragments per row
+    for i in range(0, len(fragment_images), row_size):
+        row = fragment_images[i:i+row_size]
+        # Resize to same height
+        max_h = max(f.shape[0] for f in row)
+        row_resized = [cv2.copyMakeBorder(
+            f, 0, max_h - f.shape[0], 0, 0,
+            cv2.BORDER_CONSTANT, value=(255,255,255)) 
+            for f in row]
+        row_img = np.hstack(row_resized)
+        rows.append(row_img)
 
+    # --- Fix: pad rows to same width ---
+    max_w = max(r.shape[1] for r in rows)
+    rows_padded = [cv2.copyMakeBorder(
+        r, 0, 0, 0, max_w - r.shape[1],
+        cv2.BORDER_CONSTANT, value=(255,255,255))
+        for r in rows]
+
+    grid = np.vstack(rows_padded)
     cv2.imshow("Fragments Grid", grid)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+else:
+    print("No fragments extracted to display.")
+
 
 # Show combined results
 cv2.imshow("All Fragments (Green)", all_fragments_view)
